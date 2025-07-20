@@ -7,7 +7,7 @@ defmodule LiveboardWeb.Endpoint do
   @session_options [
     store: :cookie,
     key: "_liveboard_key",
-    signing_salt: "IrdUCYer",
+    signing_salt: "C8VjOQ3P",
     same_site: "Lax"
   ]
 
@@ -34,9 +34,8 @@ defmodule LiveboardWeb.Endpoint do
     plug Phoenix.Ecto.CheckRepoStatus, otp_app: :liveboard
   end
 
-  plug Phoenix.LiveDashboard.RequestLogger,
-    param_key: "request_logger",
-    cookie_key: "request_logger"
+  # REMOVED: Phoenix.LiveDashboard.RequestLogger
+  # REMOVED: All development dashboard plugs
 
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]

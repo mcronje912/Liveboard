@@ -63,7 +63,8 @@ defmodule LiveboardWeb.BoardLive.Show do
     {:noreply,
      socket
      |> assign(:board, board)
-     |> put_flash(:info, "✨ New task created!")}
+     |> put_flash(:info, "✨ New task created!")
+     |> push_event("close-all-modals", %{})}
   end
 
   @impl true
@@ -117,7 +118,7 @@ defmodule LiveboardWeb.BoardLive.Show do
      |> assign(:user_count, length(online_users))}
   end
 
-  # Existing event handlers (unchanged)
+  # Existing event handlers (FIXED - Close modal after task creation)
   @impl true
   def handle_event("create_task", %{"column_id" => column_id, "title" => title}, socket) do
     case Boards.create_task(%{
@@ -126,8 +127,11 @@ defmodule LiveboardWeb.BoardLive.Show do
       created_by_id: socket.assigns.current_user.id
     }) do
       {:ok, _task} ->
-        # No need to reload - will get broadcast update
-        {:noreply, socket}
+        # Close modal and show success
+        {:noreply,
+         socket
+         |> push_event("close-modal", %{modal_id: "new-task-modal-#{column_id}"})
+         |> put_flash(:info, "Task created successfully!")}
 
       {:error, _changeset} ->
         {:noreply, put_flash(socket, :error, "Failed to create task")}
