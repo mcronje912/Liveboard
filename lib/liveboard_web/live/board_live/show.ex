@@ -68,11 +68,14 @@ defmodule LiveboardWeb.BoardLive.Show do
   end
 
   @impl true
-  def handle_info({:task_updated, %{task: _task}}, socket) do
+  def handle_info({:task_updated, %{task: task}}, socket) do
     # Reload board data
     board = Boards.get_board_with_columns_and_tasks!(socket.assigns.board.id)
 
-    {:noreply, assign(socket, :board, board)}
+    {:noreply,
+     socket
+     |> assign(:board, board)
+     |> put_flash(:info, "📝 Task \"#{task.title}\" updated!")}
   end
 
   @impl true
@@ -118,14 +121,25 @@ defmodule LiveboardWeb.BoardLive.Show do
      |> assign(:user_count, length(online_users))}
   end
 
-  # Existing event handlers (FIXED - Close modal after task creation)
+  # Enhanced event handler for task creation with description
   @impl true
-  def handle_event("create_task", %{"column_id" => column_id, "title" => title}, socket) do
-    case Boards.create_task(%{
+  def handle_event("create_task", params, socket) do
+    %{
+      "column_id" => column_id,
+      "title" => title,
+      "description" => description,
+      "priority" => priority
+    } = params
+
+    task_attrs = %{
       title: title,
+      description: if(description == "", do: nil, else: description),
+      priority: priority,
       column_id: column_id,
       created_by_id: socket.assigns.current_user.id
-    }) do
+    }
+
+    case Boards.create_task(task_attrs) do
       {:ok, _task} ->
         # Close modal and show success
         {:noreply,
@@ -135,6 +149,36 @@ defmodule LiveboardWeb.BoardLive.Show do
 
       {:error, _changeset} ->
         {:noreply, put_flash(socket, :error, "Failed to create task")}
+    end
+  end
+
+  # NEW: Handle task updates
+  @impl true
+  def handle_event("update_task", params, socket) do
+    %{
+      "task_id" => task_id,
+      "title" => title,
+      "description" => description,
+      "priority" => priority
+    } = params
+
+    task = Boards.get_task_with_preloads!(task_id)
+
+    update_attrs = %{
+      title: title,
+      description: if(description == "", do: nil, else: description),
+      priority: priority
+    }
+
+    case Boards.update_task(task, update_attrs) do
+      {:ok, _updated_task} ->
+        {:noreply,
+         socket
+         |> push_event("close-edit-modal", %{})
+         |> put_flash(:info, "Task updated successfully!")}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to update task")}
     end
   end
 
@@ -169,6 +213,32 @@ defmodule LiveboardWeb.BoardLive.Show do
 
       {:error, _changeset} ->
         {:noreply, put_flash(socket, :error, "Failed to move task")}
+    end
+  end
+
+  # Helper function for relative time display
+  defp time_ago(datetime) do
+    now = DateTime.utc_now()
+    diff = DateTime.diff(now, datetime, :second)
+
+    cond do
+      diff < 60 ->
+        "just now"
+
+      diff < 3600 ->
+        minutes = div(diff, 60)
+        "#{minutes}m ago"
+
+      diff < 86400 ->
+        hours = div(diff, 3600)
+        "#{hours}h ago"
+
+      diff < 604800 ->
+        days = div(diff, 86400)
+        "#{days}d ago"
+
+      true ->
+        Calendar.strftime(datetime, "%b %d")
     end
   end
 end
