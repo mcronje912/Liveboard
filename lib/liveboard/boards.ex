@@ -6,6 +6,7 @@ defmodule Liveboard.Boards do
   import Ecto.Query, warn: false
   alias Liveboard.Repo
   alias Liveboard.Boards.{Board, Column, Task, BoardMember, TaskComment, Activity}
+  alias Liveboard.Broadcasting
 
   # Board functions
   @doc """
@@ -38,7 +39,7 @@ defmodule Liveboard.Boards do
   Creates a board.
   """
   def create_board(attrs \\ %{}) do
-    result = 
+    result =
       %Board{}
       |> Board.changeset(attrs)
       |> Repo.insert()
@@ -51,12 +52,15 @@ defmodule Liveboard.Boards do
           user_id: board.created_by_id,
           role: "owner"
         })
-        
+
         # Create default columns
         create_default_columns(board)
-        
+
+        # Broadcast board creation
+        Broadcasting.broadcast_board_update(board.id, :board_created, %{board: board})
+
         {:ok, board}
-      
+
       error -> error
     end
   end
@@ -65,16 +69,28 @@ defmodule Liveboard.Boards do
   Updates a board.
   """
   def update_board(%Board{} = board, attrs) do
-    board
-    |> Board.changeset(attrs)
-    |> Repo.update()
+    case board
+         |> Board.changeset(attrs)
+         |> Repo.update() do
+      {:ok, updated_board} ->
+        Broadcasting.broadcast_board_update(board.id, :board_updated, %{board: updated_board})
+        {:ok, updated_board}
+
+      error -> error
+    end
   end
 
   @doc """
   Deletes a board.
   """
   def delete_board(%Board{} = board) do
-    Repo.delete(board)
+    case Repo.delete(board) do
+      {:ok, deleted_board} ->
+        Broadcasting.broadcast_board_update(board.id, :board_deleted, %{board_id: board.id})
+        {:ok, deleted_board}
+
+      error -> error
+    end
   end
 
   @doc """
@@ -102,25 +118,46 @@ defmodule Liveboard.Boards do
   Creates a column.
   """
   def create_column(attrs \\ %{}) do
-    %Column{}
-    |> Column.changeset(attrs)
-    |> Repo.insert()
+    case %Column{}
+         |> Column.changeset(attrs)
+         |> Repo.insert() do
+      {:ok, column} ->
+        # If column has a board_id, broadcast the update
+        if column.board_id do
+          Broadcasting.broadcast_board_update(column.board_id, :column_created, %{column: column})
+        end
+        {:ok, column}
+
+      error -> error
+    end
   end
 
   @doc """
   Updates a column.
   """
   def update_column(%Column{} = column, attrs) do
-    column
-    |> Column.changeset(attrs)
-    |> Repo.update()
+    case column
+         |> Column.changeset(attrs)
+         |> Repo.update() do
+      {:ok, updated_column} ->
+        Broadcasting.broadcast_board_update(column.board_id, :column_updated, %{column: updated_column})
+        {:ok, updated_column}
+
+      error -> error
+    end
   end
 
   @doc """
   Deletes a column.
   """
   def delete_column(%Column{} = column) do
-    Repo.delete(column)
+    case Repo.delete(column) do
+      {:ok, deleted_column} ->
+        Broadcasting.broadcast_board_update(column.board_id, :column_deleted, %{column_id: column.id})
+        {:ok, deleted_column}
+
+      error -> error
+    end
   end
 
   # Task functions
@@ -130,42 +167,134 @@ defmodule Liveboard.Boards do
   def get_task!(id), do: Repo.get!(Task, id)
 
   @doc """
-  Creates a task.
+  Gets a task with preloaded associations.
+  """
+  def get_task_with_preloads!(id) do
+    Repo.get!(Task, id)
+    |> Repo.preload([:column, :assignee, :created_by])
+  end
+
+  @doc """
+  Creates a task with real-time broadcasting.
   """
   def create_task(attrs \\ %{}) do
     attrs = put_task_position(attrs)
-    
-    %Task{}
-    |> Task.changeset(attrs)
-    |> Repo.insert()
+
+    case %Task{}
+         |> Task.changeset(attrs)
+         |> Repo.insert() do
+      {:ok, task} ->
+        # Preload associations
+        task = Repo.preload(task, [:column, :assignee, :created_by])
+
+        # Get the board_id from the column
+        board_id = get_board_id_from_task(task)
+
+        # Broadcast task creation
+        Broadcasting.broadcast_task_created(board_id, task)
+
+        # Create activity
+        create_activity(%{
+          action: "task_created",
+          user_id: task.created_by_id,
+          board_id: board_id,
+          details: %{task_id: task.id, task_title: task.title}
+        })
+
+        {:ok, task}
+
+      error -> error
+    end
   end
 
   @doc """
-  Updates a task.
+  Updates a task with real-time broadcasting.
   """
   def update_task(%Task{} = task, attrs) do
-    task
-    |> Task.changeset(attrs)
-    |> Repo.update()
+    case task
+         |> Task.changeset(attrs)
+         |> Repo.update() do
+      {:ok, updated_task} ->
+        # Preload associations after update
+        updated_task = Repo.preload(updated_task, [:column, :assignee, :created_by])
+
+        board_id = get_board_id_from_task(updated_task)
+
+        # Broadcast task update
+        Broadcasting.broadcast_task_updated(board_id, updated_task)
+
+        {:ok, updated_task}
+
+      error -> error
+    end
   end
 
   @doc """
-  Moves a task to a different column/position.
+  Moves a task to a different column/position with real-time broadcasting.
   """
   def move_task(task_id, column_id, position) do
-    task = Repo.get!(Task, task_id)
-    
-    update_task(task, %{
+    task = Repo.get!(Task, task_id) |> Repo.preload([:column])
+    old_column_id = task.column_id
+
+    case update_task(task, %{
       column_id: String.to_integer(column_id),
       position: position
-    })
+    }) do
+      {:ok, updated_task} ->
+        board_id = get_board_id_from_task(updated_task)
+
+        # Broadcast task movement
+        Broadcasting.broadcast_task_moved(board_id, updated_task, old_column_id, updated_task.column_id)
+
+        # Create activity
+        create_activity(%{
+          action: "task_moved",
+          user_id: updated_task.created_by_id,  # TODO: Get actual current user
+          board_id: board_id,
+          details: %{
+            task_id: updated_task.id,
+            task_title: updated_task.title,
+            old_column_id: old_column_id,
+            new_column_id: updated_task.column_id
+          }
+        })
+
+        {:ok, updated_task}
+
+      error -> error
+    end
   end
 
   @doc """
-  Deletes a task.
+  Deletes a task with real-time broadcasting.
   """
   def delete_task(%Task{} = task) do
-    Repo.delete(task)
+    # Ensure we have the column preloaded to get board_id
+    task = if Ecto.assoc_loaded?(task.column) do
+      task
+    else
+      Repo.preload(task, [:column])
+    end
+
+    board_id = get_board_id_from_task(task)
+
+    case Repo.delete(task) do
+      {:ok, deleted_task} ->
+        # Broadcast task deletion
+        Broadcasting.broadcast_task_deleted(board_id, task.id)
+
+        # Create activity
+        create_activity(%{
+          action: "task_deleted",
+          user_id: task.created_by_id,  # TODO: Get actual current user
+          board_id: board_id,
+          details: %{task_id: task.id, task_title: task.title}
+        })
+
+        {:ok, deleted_task}
+
+      error -> error
+    end
   end
 
   @doc """
@@ -183,6 +312,39 @@ defmodule Liveboard.Boards do
     %BoardMember{}
     |> BoardMember.changeset(attrs)
     |> Repo.insert()
+  end
+
+  # Activity functions
+  @doc """
+  Creates an activity with real-time broadcasting.
+  """
+  def create_activity(attrs \\ %{}) do
+    case %Activity{}
+         |> Activity.changeset(attrs)
+         |> Repo.insert() do
+      {:ok, activity} ->
+        # Preload user for the activity
+        activity = Repo.preload(activity, [:user])
+
+        # Broadcast activity
+        Broadcasting.broadcast_activity(activity.board_id, activity)
+        {:ok, activity}
+
+      error -> error
+    end
+  end
+
+  @doc """
+  Gets recent activities for a board.
+  """
+  def get_recent_activities(board_id, limit \\ 10) do
+    from(a in Activity,
+      where: a.board_id == ^board_id,
+      order_by: [desc: a.inserted_at],
+      limit: ^limit,
+      preload: [:user]
+    )
+    |> Repo.all()
   end
 
   # Private helper functions
@@ -204,8 +366,8 @@ defmodule Liveboard.Boards do
 
   defp put_task_position(%{column_id: column_id} = attrs) do
     # Get the highest position in the column and add 1
-    max_position = 
-      from(t in Task, 
+    max_position =
+      from(t in Task,
         where: t.column_id == ^column_id,
         select: max(t.position)
       )
@@ -217,6 +379,16 @@ defmodule Liveboard.Boards do
 
     Map.put(attrs, :position, max_position)
   end
-  
+
   defp put_task_position(attrs), do: Map.put(attrs, :position, 0.0)
+
+  defp get_board_id_from_task(task) do
+    if task.column do
+      task.column.board_id
+    else
+      # Load the column if not preloaded
+      column = Repo.get!(Column, task.column_id)
+      column.board_id
+    end
+  end
 end

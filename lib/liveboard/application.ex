@@ -12,6 +12,8 @@ defmodule Liveboard.Application do
       Liveboard.Repo,
       {DNSCluster, query: Application.get_env(:liveboard, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Liveboard.PubSub},
+      # ADD PRESENCE HERE
+      LiveboardWeb.Presence,
       # Start the Finch HTTP client for sending emails
       {Finch, name: Liveboard.Finch},
       # Start a worker by calling: Liveboard.Worker.start_link(arg)
