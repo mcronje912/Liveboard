@@ -74,4 +74,21 @@ defmodule LiveboardWeb.BoardLive.Show do
         {:noreply, put_flash(socket, :error, "Failed to move task")}
     end
   end
+
+  @impl true
+  def handle_event("move_task_drag", %{"task_id" => task_id, "column_id" => column_id, "position" => position}, socket) do
+    case Boards.move_task(task_id, column_id, position) do
+      {:ok, _task} ->
+        # Reload board data
+        board = Boards.get_board_with_columns_and_tasks!(socket.assigns.board.id)
+        
+        {:noreply, 
+         socket
+         |> assign(:board, board)
+         |> put_flash(:info, "Task moved!")}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to move task")}
+    end
+  end
 end
